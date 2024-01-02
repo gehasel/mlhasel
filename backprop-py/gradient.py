@@ -14,6 +14,9 @@ class Layer:
         else:
             return super().__str__()
 
+    def __repr__(self) -> str:
+        return self.__str__()
+
     def get_weight_vector(self) -> np.ndarray:
         raise NotImplementedError
 
@@ -48,7 +51,7 @@ class Lin(Layer):
         weight_matrix of shape (number of inputs, number of outputs)
         bias_vector of shape (number of outputs, 1)
         """
-        super().__init__()
+        super().__init__(name=name)
         self.weight_matrix = weight_matrix
         self.bias_vector = bias_vector
         self.input_dim = self.weight_matrix.shape[0]
@@ -99,6 +102,8 @@ class Lin(Layer):
         """
         a: input of the forward pass at this layer
         """
+        # print(f"{a.shape=}")
+        # print(f"{self.input_dim=}")
         assert a.shape == (self.input_dim, 1)
         result_matrix = self.weight_matrix
         assert result_matrix.shape == (self.input_dim, self.output_dim)
@@ -107,40 +112,46 @@ class Lin(Layer):
 
 class Softmax(Layer):
     def __init__(self, name: Optional[str] = None):
-        super().__init__(name)
+        super().__init__(name=name)
 
-    def __call__(self, z: np.ndarray):
-        z_max = np.max(z, axis=0)
-        z_norm = z - z_max
-        r = np.divide(np.exp(z_norm), np.sum(np.exp(z_norm), axis=0))
+    def __call__(self, a: np.ndarray):
+        assert a.shape[1] == 1
+        a_max = np.max(a, axis=0)
+        a_norm = a - a_max
+        r = np.divide(np.exp(a_norm), np.sum(np.exp(a_norm), axis=0))
         return r
 
-    def input_gradient(self, z_l: np.ndarray):
+    def input_gradient(self, a: np.ndarray):
         """
         The transpose of the jacobian where every derivative in the jacobian
-        evaluated z_l
+        evaluated a
         """
-        exp_z = np.exp(z_l)
+        assert a.shape[1] == 1
+        exp_z = np.exp(a)
         normalized_exp_z = exp_z / np.sum(exp_z)
         J = -np.outer(normalized_exp_z, normalized_exp_z)
         # for some reason, we must flatten normalized... here,
         # otherwise it only adds the first element of b to the diagonal, not elementwise
         np.fill_diagonal(J, normalized_exp_z.flatten() + J.diagonal())
-        # J is now the jacobian where every partial derivative has already evaluated z_l
+        # J is now the jacobian where every partial derivative has already evaluated a
         # Although symmetric, I transpose for consistency
         r = J.T
         return r
 
-    def get_weight_vector(self):
-        return np.array([])
+    def params_gradient(self, a: np.ndarray) -> np.ndarray:
+        assert a.shape[1] == 1
+        return np.empty((0, a.shape[0]))  # returns a matrix with no rows
 
-    def set_weight_vector(self, flat_vector):
+    def get_weight_vector(self) -> np.ndarray:
+        return np.empty((0, 1))
+
+    def set_weight_vector(self, flat_vector: np.ndarray) -> None:
         pass
 
 
 class CE(Layer):
     def __init__(self, name: Optional[str] = None):
-        super().__init__(name)
+        super().__init__(name=name)
 
     def __call__(self, y: np.ndarray, y_pred: np.ndarray):
         """
@@ -161,15 +172,19 @@ class CE(Layer):
         r = J.T
         return r
 
-    def get_weight_vector(self):
-        return np.array([])
+    def get_weight_vector(self) -> np.ndarray:
+        return np.empty((0, 1))
 
-    def set_weight_vector(self, flat_vector):
+    def set_weight_vector(self, flat_vector: np.ndarray) -> None:
         pass
 
 
 def compose(f, g):
     return lambda x: f(g(x))
+
+
+def identity(e):
+    return e
 
 
 class NN:
@@ -188,19 +203,23 @@ class NN:
 
     def print_gradients(self, x, y):
         for f in self.functions:
-            display(self.get_gradient(f, x, y))
+            print(f"Gradient of {f}:")
+            grad = self.params_gradient_f_base(f, x, y)
+            print(f"{grad.shape=}")
+            print(f"{f.get_weight_vector().shape=}")
+            display(grad)
 
-    def get_gradient(self, f_base, x, y):
+    def params_gradient_f_base(self, f_base, x, y):
         """
         hier lässt sich noch viel rausholen, da die multiplikation im prinzip iterativ ist und der hintere teil immer wieder verwendet wird.
         """
-        # def get_gradient(self, f2, a):
-        # functions_after = [f2, f3, f4]
+        # def get_gradient(self, f2, x, y):
+        # functions_after = [f3, f4]
         # return f2.paramsgradient(a) @ f3.inputgradient(f2(a)) @ f4.inputgradient(f3(f2(a)))
 
         # return reduce(@, [f.right_gradient(reduce(compose, fs_before)(a)) for f in functions_after])
 
-        functions_after = self.functions[self.functions.index(f_base) + 1:]
+        functions_after = self.functions[self.functions.index(f_base):]  # [f2, f3, f4]
 
         def correct_gradient(f, f_base):
             if f == f_base:
@@ -210,8 +229,18 @@ class NN:
 
         gradients = [
             (correct_gradient(f, f_base))(
-                reduce(compose, self.functions[: self.functions.index(f)])(x)
+                reduce(compose, reversed(self.functions[:self.functions.index(f)]), identity)(x)
             )
             for f in functions_after
-        ]
-        return reduce(np.matlul, gradients) @ self.loss.input_gradient(y, self(x))
+        ]  # [f_2.params_gradient(reduce(compose, [f_1])(x)), f_3.input_gradient(reduce(compose, [f_2, f_1])(x)), f_4.input_gradient(reduce(compose, [f_3, f_2, f_1])(x))]
+        # == [f_2.params_gradient(f_1(x)), f_3.input_gradient(f_2(f_1(x))), f_4.input_gradient(f_3(f_2(f_1(x))))]
+
+        # gradients = []
+        # for f in functions_after:
+        #     inner_functions = self.functions[:self.functions.index(f)]
+        #     inner_functions.reverse()
+        #     # print(list(inner_functions))
+        #     inner_eval = reduce(compose, inner_functions, identity)(x)
+        #     correct_gradient_f = correct_gradient(f, f_base)
+        #     gradients.append(correct_gradient_f(inner_eval))
+        return reduce(np.matmul, gradients) @ self.loss.input_gradient(y, self(x))
