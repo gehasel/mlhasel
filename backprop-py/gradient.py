@@ -4,9 +4,20 @@ from functools import reduce
 from IPython.display import display
 
 
-class Layer:
+class NamedObject():
+    def __str__(self) -> str:
+        if self.name is not None:
+            return self.name
+        else:
+            return super().__str__()
+
+    def __repr__(self) -> str:
+        return self.__str__()
+
+
+class Layer(NamedObject):
     def __init__(self, name: Optional[str] = None) -> None:
-        self.name = name
+        super().__init__(name)
 
     def __str__(self) -> str:
         if self.name is not None:
@@ -187,29 +198,28 @@ def identity(e):
     return e
 
 
-class NN:
-    def __init__(self, functions: List[callable], loss: callable):
+class Composition(Layer):
+    def __init__(self, functions: List[callable]):
         self.functions = functions
         self.composite = reduce(
             compose, reversed(functions)
-        )  # like foldl, but order does not matter, since composition is associative
-        self.loss = loss
+        )  # like foldl or foldr (both, since composition is associative)
 
     def __call__(self, x: np.ndarray):
         return self.composite(x)
 
-    # def loss_x_y(self, x: np.ndarray, y: np.ndarray):
-    #     return self.loss(y, self(x))
+    def f_base_input_gradient(self, f_base, x, y):
+        functions = self.functions[self.functions.index(f_base):]
 
-    def print_gradients(self, x, y):
-        for f in self.functions:
-            print(f"Gradient of {f}:")
-            grad = self.params_gradient_f_base(f, x, y)
-            print(f"{grad.shape=}")
-            print(f"{f.get_weight_vector().shape=}")
-            display(grad)
+        gradients = [
+            (f.input_gradient)(
+                reduce(compose, reversed(self.functions[:self.functions.index(f)]), identity)(x)
+            )
+            for f in functions
+        ]
+        return reduce(np.matmul, gradients)
 
-    def params_gradient_f_base(self, f_base, x, y):
+    def f_base_params_gradient(self, f_base, x, y):
         """
         hier lässt sich noch viel rausholen, da die multiplikation im prinzip iterativ ist und der hintere teil immer wieder verwendet wird.
         """
@@ -219,16 +229,10 @@ class NN:
 
         # return reduce(@, [f.right_gradient(reduce(compose, fs_before)(a)) for f in functions_after])
 
-        functions_after = self.functions[self.functions.index(f_base):]  # [f2, f3, f4]
-
-        def correct_gradient(f, f_base):
-            if f == f_base:
-                return f.params_gradient
-            else:
-                return f.input_gradient
+        functions_after = self.functions[self.functions.index(f_base)+1:]  # [f2, f3, f4]
 
         gradients = [
-            (correct_gradient(f, f_base))(
+            (f.input_gradient)(
                 reduce(compose, reversed(self.functions[:self.functions.index(f)]), identity)(x)
             )
             for f in functions_after
@@ -243,4 +247,29 @@ class NN:
         #     inner_eval = reduce(compose, inner_functions, identity)(x)
         #     correct_gradient_f = correct_gradient(f, f_base)
         #     gradients.append(correct_gradient_f(inner_eval))
-        return reduce(np.matmul, gradients) @ self.loss.input_gradient(y, self(x))
+        return f_base.params_gradient(x) @ reduce(np.matmul, gradients)
+
+    def print_gradients(self, x, y):
+        for f in self.functions:
+            print(f"Gradient of {f}:")
+            grad = self.params_gradient_f_base(f, x, y)
+            print(f"{grad.shape=}")
+            print(f"{f.get_weight_vector().shape=}")
+            display(grad)
+
+
+class model(NamedObject):
+    def __init__(self, composition: Composition, loss: callable, name: Optional[str] = None) -> None:
+        super().__init__(name)
+        self.composition = composition
+        self.loss = loss
+        self.name = name
+
+    def __call__(self, x: np.ndarray) -> np.ndarray:
+        return self.composition(x)
+
+    def loss_x_y(self, x: np.ndarray, y: np.ndarray):
+        return self.loss(y, self(x))
+
+    def loss_params_gradient(self, x: np.ndarray, y: np.ndarray) -> np.ndarray:
+        return self.composition.params_gradient(x) @ self.loss.input_gradient(y, self(x))
