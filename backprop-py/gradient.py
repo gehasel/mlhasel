@@ -4,7 +4,10 @@ from functools import reduce
 from IPython.display import display
 
 
-class NamedObject():
+class NamedObject:
+    def __init__(self, name: Optional[str] = None):
+        self.name = name
+
     def __str__(self) -> str:
         if self.name is not None:
             return self.name
@@ -57,7 +60,12 @@ class Layer(NamedObject):
 
 
 class Lin(Layer):
-    def __init__(self, weight_matrix: np.ndarray, bias_vector: np.ndarray, name: Optional[str] = None):
+    def __init__(
+        self,
+        weight_matrix: np.ndarray,
+        bias_vector: np.ndarray,
+        name: Optional[str] = None,
+    ):
         """
         weight_matrix of shape (number of inputs, number of outputs)
         bias_vector of shape (number of outputs, 1)
@@ -103,7 +111,7 @@ class Lin(Layer):
         upper_matrix = np.zeros((self.input_dim * self.output_dim, self.output_dim))
         for i in range(self.output_dim):
             # Fill the ith column with the vector a:
-            upper_matrix[i * self.input_dim:(i + 1) * self.input_dim, i] = a[:, 0]
+            upper_matrix[i * self.input_dim : (i + 1) * self.input_dim, i] = a[:, 0]
         lower_matrix = np.eye(self.output_dim)  # grad of the bias terms
         result_matrix = np.vstack((upper_matrix, lower_matrix))
         assert result_matrix.shape == (self.num_params, self.output_dim)
@@ -208,18 +216,20 @@ class Composition(Layer):
     def __call__(self, x: np.ndarray):
         return self.composite(x)
 
-    def f_base_input_gradient(self, f_base, x, y):
-        functions = self.functions[self.functions.index(f_base):]
-
+    def input_gradient(self, x: np.ndarray) -> np.ndarray:
         gradients = [
             (f.input_gradient)(
-                reduce(compose, reversed(self.functions[:self.functions.index(f)]), identity)(x)
+                reduce(
+                    compose,
+                    reversed(self.functions[: self.functions.index(f)]),
+                    identity,
+                )(x)
             )
-            for f in functions
+            for f in self.functions
         ]
         return reduce(np.matmul, gradients)
 
-    def f_base_params_gradient(self, f_base, x, y):
+    def f_base_params_gradient(self, f_base: callable, x: np.ndarray) -> np.ndarray:
         """
         hier lässt sich noch viel rausholen, da die multiplikation im prinzip iterativ ist und der hintere teil immer wieder verwendet wird.
         """
@@ -233,7 +243,11 @@ class Composition(Layer):
 
         gradients = [
             (f.input_gradient)(
-                reduce(compose, reversed(self.functions[:self.functions.index(f)]), identity)(x)
+                reduce(
+                    compose,
+                    reversed(self.functions[: self.functions.index(f)]),
+                    identity,
+                )(x)
             )
             for f in functions_after
         ]  # [f_2.params_gradient(reduce(compose, [f_1])(x)), f_3.input_gradient(reduce(compose, [f_2, f_1])(x)), f_4.input_gradient(reduce(compose, [f_3, f_2, f_1])(x))]
@@ -249,6 +263,15 @@ class Composition(Layer):
         #     gradients.append(correct_gradient_f(inner_eval))
         return f_base.params_gradient(x) @ reduce(np.matmul, gradients)
 
+    def params_gradient(self, x: np.ndarray) -> np.ndarray:
+        return np.vstack([self.f_base_params_gradient(f, x) for f in self.functions])
+
+    def get_weight_vector(self) -> np.ndarray:
+        raise NotImplementedError
+
+    def set_weight_vector(self, stacked_weight_vector: np.ndarray) -> None:
+        raise NotImplementedError
+
     def print_gradients(self, x, y):
         for f in self.functions:
             print(f"Gradient of {f}:")
@@ -258,7 +281,7 @@ class Composition(Layer):
             display(grad)
 
 
-class model(NamedObject):
+class Model(NamedObject):
     def __init__(self, composition: Composition, loss: callable, name: Optional[str] = None) -> None:
         super().__init__(name)
         self.composition = composition
