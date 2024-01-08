@@ -2,6 +2,7 @@ import numpy as np
 from typing import List, Optional
 from functools import reduce
 from IPython.display import display
+import logging
 
 np.set_printoptions(suppress=True, precision=4)
 
@@ -310,7 +311,7 @@ class Composition(MLFunction):
         # return f2.paramsgradient(f_1(x)) @ f3.inputgradient(f2(f_1(x))) @ f4.inputgradient(f3(f2(f_1(x))))
         return reduce(np.matmul, gradients)
 
-    def params_gradient(self, x: np.ndarray) -> np.ndarray:
+    def params_gradient_naive(self, x: np.ndarray) -> np.ndarray:
         return np.vstack([self.f_base_params_gradient(f, x) for f in self.ml_functions])
 
     @property
@@ -344,19 +345,44 @@ class Optimizer(NamedObject):
         raise NotImplementedError
 
 
-class GradientDescent(Optimizer):
-    def __init__(self, learning_rate: float, epochs: int):
+class BatchGradientDescent(Optimizer):
+    def __init__(self, batch_size, learning_rate: float, epochs: int):
+        self.batch_size = batch_size
         self.learning_rate = learning_rate
         self.epochs = epochs
 
     def optimize(self, model: 'Model'):
-        counter = 0
-        for x, y in zip(model.X_train, model.Y_train):
-            x_cv = to_column_vector(x)
-            y_cv = to_column_vector(y)
-            model.composition.weight_vector -= self.learning_rate * model.loss_params_gradient(x_cv, y_cv)
-            if not counter % 100:
-                print(model.loss_x_y(x_cv, y_cv))
+        for i in range(self.epochs):
+            logging.debug(f"entered epoch {i}")
+            batch_count = 0
+            idx_low = self.batch_size * batch_count  # 0
+            idx_high = self.batch_size * (batch_count + 1)  # 12
+
+            # I believe this loop cannot be parallelized, since it depends on the weights from the previous iteration
+            while idx_low < (model.X_train.shape[0]):  # 0 <= 12
+                logging.debug(f"entered batch {batch_count}")
+                X_batch = model.X_train[idx_low: idx_high]
+                Y_batch = model.Y_train[idx_low: idx_high]
+
+                # this is just a for loop around getting the gradients, can this be paralellized?
+                mutual_grad_sum = np.zeros(model.composition.weight_vector.shape)
+                batch_loss_sum = 0
+                for k, (x, y) in enumerate(zip(X_batch, Y_batch)):
+                    logging.debug(f"eval point {k}")
+                    x_cv = to_column_vector(x)
+                    y_cv = to_column_vector(y)
+                    mutual_grad_sum += model.loss_params_gradient(x_cv, y_cv)
+                    batch_loss_sum += model.loss_x_y(x_cv, y_cv)
+                mutual_grad = mutual_grad_sum / X_batch.shape[0]
+                batch_loss = batch_loss_sum / X_batch.shape[0]
+                model.composition.weight_vector -= self.learning_rate * mutual_grad
+
+                logging.info(f"average loss in batch {batch_count} before its parameter update: {batch_loss}")
+
+                batch_count += 1
+                idx_low = self.batch_size * batch_count
+                idx_high = self.batch_size * (batch_count + 1)
+        logging.info(f"epoch {i} done.")
 
 
 class Model(NamedObject):
